@@ -1,95 +1,28 @@
 # directory-organizer-local-llm
 
-ローカル LLM を使ってディレクトリ整理の提案と適用を行う、安全寄りの CLI エージェントです。
-
-目的は「雑多なファイル群を、小さく予測可能なフォルダ構造へ寄せる」ことです。  
-LLM は分類提案だけを担当し、実際のファイル移動はローカル検証を通ったものだけが実行されます。
+ローカル LLM を使ってディレクトリ整理の提案と適用を行う CLI です。  
+通常モードは指定ディレクトリ配下を再帰的に全件走査し、Fast Lane は 30 秒以内の整理体験を狙って高信頼な一部だけを高速処理します。
 
 ## 特徴
 
-- OpenAI 互換のローカル API に対応
-  - LM Studio
-  - Ollama の OpenAI 互換エンドポイント
-  - LocalAI など
-- 既定は `plan` モード
-  - まず提案 JSON と Markdown レポートを出す
-- `apply` モードでも削除はしない
-  - move のみ
-- 危険な提案はローカルで拒否
-  - 絶対パス禁止
-  - `..` 禁止
-  - 拡張子の変化を禁止
-  - 既存ファイルとの衝突を拒否
-  - 低信頼度の提案をスキップ可能
-- LLM なしでも `--mock` で動作確認可能
-
-## ディレクトリ構成
-
-```text
-directory-organizer-local-llm/
-├── dirorganizer/
-│   ├── __init__.py
-│   ├── llm_client.py
-│   ├── models.py
-│   ├── planner.py
-│   ├── rules.py
-│   └── scanner.py
-├── scripts/
-│   └── run_directory_organizer.py
-└── tests/
-    └── test_directory_organizer.py
-```
+- `plan` `run` `apply` の 3 コマンド
+- `run` で `plan -> apply` を 1 プロセスで完了
+- Fast Lane は保存済み `manifest.json` をそのまま apply
+- `apply --manifest` は LLM 再推論なし
+- 既存の `--mode plan|apply` も後方互換で利用可能
+- 削除なし、move のみ
+- 危険パス、拡張子変更、衝突はローカルでブロック
+- `undo_manifest.json` と `apply_result.json` を保存
 
 ## 前提
 
 - Python 3.10 以上
-- `uv` を使う場合は `uv` がインストール済みであること
-- ローカル LLM の OpenAI 互換 API が起動していること
+- ローカル LLM の OpenAI 互換 API
+  - LM Studio
+  - Ollama の OpenAI 互換エンドポイント
+  - LocalAI など
 
-例:
-
-```bash
-LM Studio: http://127.0.0.1:1234/v1
-Ollama:    http://127.0.0.1:11434/v1
-```
-
-`.env` はリポジトリ直下から自動で読み込みます。必要なら [`.env.sample`](/Users/kichinosukey-mba/projects/directory-organizer-local-llm/.env.sample) をコピーして使ってください。
-
-## セットアップ
-
-### `uv` を使う場合
-
-1. プロジェクトへ移動します。
-
-```bash
-cd /Users/kichinosukey-mba/projects/directory-organizer-local-llm
-```
-
-2. 仮想環境を作成します。
-
-```bash
-uv venv
-```
-
-3. 仮想環境を有効化します。
-
-```bash
-source .venv/bin/activate
-```
-
-4. 任意で開発用ツールを追加します。
-
-```bash
-uv pip install ruff
-```
-
-5. `.env.sample` をコピーして `.env` を作成します。
-
-```bash
-cp .env.sample .env
-```
-
-6. `.env` を編集します。
+`.env` はリポジトリ直下から自動で読み込みます。最低限、以下を設定してください。
 
 ```dotenv
 LOCAL_LLM_MODEL=openai/gpt-oss-20b
@@ -97,174 +30,258 @@ LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1
 LOCAL_LLM_API_KEY=not-needed
 ```
 
-7. まずは mock モードで動作確認します。
+## セットアップ
 
-```bash
-uv run python scripts/run_directory_organizer.py \
-  --target-dir ./sample-dir \
-  --mode plan \
-  --mock
-```
-
-8. 実 LLM で計画を出します。
-
-```bash
-uv run python scripts/run_directory_organizer.py \
-  --target-dir ~/Downloads/messy-folder \
-  --mode plan
-```
-
-9. 問題なければ適用します。
-
-```bash
-uv run python scripts/run_directory_organizer.py \
-  --target-dir ~/Downloads/messy-folder \
-  --mode apply
-```
-
-### 標準の `venv` を使う場合
-
-1. プロジェクトへ移動します。
+### `uv` を使う場合
 
 ```bash
 cd /Users/kichinosukey-mba/projects/directory-organizer-local-llm
-```
-
-2. 仮想環境を作成します。
-
-```bash
-python3 -m venv .venv
-```
-
-3. 仮想環境を有効化します。
-
-```bash
+uv venv
 source .venv/bin/activate
 ```
 
-4. 任意で開発用ツールを追加します。
+### `venv` を使う場合
 
 ```bash
-python -m pip install --upgrade pip
-python -m pip install ruff
+cd /Users/kichinosukey-mba/projects/directory-organizer-local-llm
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-5. `.env.sample` をコピーして `.env` を作成します。
+## 実行方法
 
-```bash
-cp .env.sample .env
-```
-
-6. `.env` を編集して `LOCAL_LLM_MODEL` と `LOCAL_LLM_BASE_URL` を設定します。
-
-## 実行例
-
-### 1. dry-run 相当の計画作成
+### 1. plan のみ作る
 
 ```bash
 python scripts/run_directory_organizer.py \
+  plan \
+  --target-dir ~/Downloads/messy-folder \
+  --model openai/gpt-oss-20b
+```
+
+### 2. plan -> apply を一気通貫で実行する
+
+```bash
+python scripts/run_directory_organizer.py \
+  run \
+  --target-dir ~/Downloads/messy-folder \
+  --model openai/gpt-oss-20b
+```
+
+TTY 上では plan 要約を出した後に `[a] apply / [v] view details / [q] quit` を受け付けます。  
+非対話実行では `--yes` を付けると即 apply します。
+
+```bash
+python scripts/run_directory_organizer.py \
+  run \
   --target-dir ~/Downloads/messy-folder \
   --model openai/gpt-oss-20b \
-  --base-url http://127.0.0.1:1234/v1 \
-  --mode plan
+  --yes
 ```
 
-### 2. 実際に move する
+### 3. 保存済み manifest を apply する
 
 ```bash
 python scripts/run_directory_organizer.py \
-  --target-dir ~/Downloads/messy-folder \
-  --model openai/gpt-oss-20b \
-  --base-url http://127.0.0.1:1234/v1 \
-  --mode apply
+  apply \
+  --manifest ~/Downloads/messy-folder/.dirorganizer-runs/20260313T160000Z/manifest.json
 ```
 
-### 3. LLM なしで挙動確認
+### 4. Fast Lane を使う
 
 ```bash
 python scripts/run_directory_organizer.py \
+  run \
+  --target-dir ~/Downloads \
+  --fast-lane \
+  --preset downloads-default \
+  --model openai/gpt-oss-20b
+```
+
+Fast Lane は以下の既定制限で動きます。
+
+- `max-depth=1`
+- `max-files=30`
+- `batch-size=15`
+- `min-confidence=0.80`
+- 対象拡張子: `.pdf` `.docx` `.txt` `.md` `.xlsx` `.csv` `.jpg` `.jpeg` `.png`
+- `100 MiB` 超のファイルはスキップ
+- 更新日時の新しい順で候補を絞り込み
+
+### 5. mock で挙動確認する
+
+```bash
+python scripts/run_directory_organizer.py \
+  run \
   --target-dir ./sample-dir \
-  --mode plan \
-  --mock
+  --fast-lane \
+  --mock \
+  --yes
 ```
 
-`uv` を使う場合は `python ...` を `uv run python ...` に置き換えて実行できます。
+## CLI オプション
 
-`--target-dir` を毎回省きたい場合は、`.env` に `DIRECTORY_ORGANIZER_TARGET_DIR` を設定できます。成果物の既定保存先を変えたい場合は `DIRECTORY_ORGANIZER_OUTPUT_DIR` も使えます。
+### source ベースコマンド
 
-## 主要オプション
+`plan` と `run` で使えます。
 
 | オプション | 説明 |
 |---|---|
-| `--target-dir` | 整理対象ディレクトリ |
-| `--mode` | `plan` または `apply` |
-| `--model` | 使用モデル名。`--mock` 以外では必須 |
+| `--target-dir`, `--source` | 整理対象ディレクトリ |
+| `--model` | 使用モデル名 |
 | `--base-url` | OpenAI 互換 API ベース URL |
-| `--api-key` | API キー。LM Studio では未使用でも可 |
-| `--rules` | 任意のルール JSON |
-| `--output-dir` | 実行成果物の保存先。既定は `<target>/.dirorganizer-runs` |
-| `--max-files` | 一度に扱う最大ファイル数 |
-| `--max-depth` | スキャン深さ |
-| `--batch-size` | LLM へ渡す 1 バッチあたりの件数 |
-| `--min-confidence` | 適用対象にする最小信頼度 |
-| `--mock` | ヒューリスティックで代替 |
-| `--include-hidden` | 隠しファイル・ディレクトリも対象にする |
+| `--api-key` | API キー |
+| `--rules` | 追加ルール JSON |
+| `--output-dir` | 成果物保存先 |
+| `--max-files` | 通常モードでは走査上限、Fast Lane では候補上限 |
+| `--max-depth` | 走査深さの上限 |
+| `--batch-size` | LLM へ渡す件数 |
+| `--min-confidence` | apply 対象にする最小信頼度 |
+| `--include-hidden` | 隠しファイルも対象にする |
+| `--mock` | LLM の代わりにヒューリスティックを使う |
+| `--fast-lane` | 高速整理モードを有効化 |
+| `--preset` | `downloads-default`, `finance-receipts`, `research-papers` |
+| `--yes` | `run` の確認プロンプトを省略する |
 
-## ルール JSON
+### manifest ベースコマンド
 
-`--rules` には次の形式を渡せます。
+| コマンド | 説明 |
+|---|---|
+| `apply --manifest <path>` | 保存済み manifest を再利用して apply |
 
-```json
-{
-  "goal": "研究メモと請求書を分けたい",
-  "taxonomy": [
-    {
-      "path": "documents/research",
-      "description": "調査メモ、pdf、技術資料"
-    },
-    {
-      "path": "documents/finance",
-      "description": "請求書、領収書、見積書"
-    }
-  ],
-  "rename_style": "元のファイル名を維持し、必要時のみ日付を先頭に付ける",
-  "additional_instructions": [
-    "既存ディレクトリを優先する",
-    "同名衝突を起こす rename は避ける"
-  ]
-}
-```
+## プリセット
+
+Fast Lane では毎回ルールを組み立てず、以下の preset を使います。
+
+- `downloads-default`
+- `finance-receipts`
+- `research-papers`
+
+preset には taxonomy, rename_style, allowed_extensions, confidence threshold, skip policy, destination mapping が含まれます。
 
 ## 成果物
 
-各実行で `<output-dir>/<run_id>/` を作り、以下を保存します。
+各実行で `<output-dir>/<run_id>/` を作成し、以下を保存します。
 
 - `plan.json`
 - `plan.md`
 - `manifest.json`
+- `apply_result.json`
+- `undo_manifest.json`
 
-CLI の最後には機械可読な結果行を 1 行出力します。
+`manifest.json` は v2 形式です。
 
-```text
-[RESULT] mode=plan status=success run_dir=/.../20260313T160000Z planned_moves=8 applied_moves=0 skipped=3
+```json
+{
+  "version": 2,
+  "created_at": "2026-03-13T12:00:00+00:00",
+  "target_dir": "/path/to/target",
+  "mode": "run",
+  "fast_lane": true,
+  "preset": "downloads-default",
+  "rules": {},
+  "summary": "short summary",
+  "counts": {
+    "files_scanned": 34,
+    "files_considered": 30,
+    "planned_moves": 18,
+    "skipped": 10,
+    "blocked": 2,
+    "new_folders": 4,
+    "applied_moves": 18
+  },
+  "warnings": [],
+  "timings": {
+    "scan_seconds": 1.5,
+    "plan_seconds": 9.1,
+    "save_seconds": 0.2,
+    "apply_seconds": 1.1,
+    "processing_seconds": 10.8,
+    "total_seconds": 11.9
+  },
+  "operations": []
+}
 ```
 
-## 安全設計
+CLI の最後には結果行を 1 行出力します。
 
-- 既定は `plan`
-- `apply` でも `move` だけ
-- すべて target root 内の相対パスに強制
-- 提案の妥当性はローカルで再検証
-- 衝突や低信頼度は自動スキップ
+```text
+[RESULT] mode=run status=success run_dir=/.../20260313T160000Z planned_moves=18 applied_moves=18 skipped=12
+```
+
+## 通常モードと Fast Lane の違い
+
+### 通常モード
+
+- 既定で全件走査
+- 深いサブディレクトリも対象
+- `apply` は `run` または legacy `--mode apply` を使う
+
+### Fast Lane
+
+- 深さ 1 のみ
+- 高信頼な候補だけを短時間で処理
+- `apply --manifest` で再推論しない
+- 定期実行向き
+
+## 定期実行
+
+v1 では CLI と `launchd` 手順を提供します。  
+Fast Lane を無人実行する場合は `run --fast-lane --yes` を使ってください。
+
+### `launchd` 例
+
+`~/Library/LaunchAgents/com.example.directory-organizer-fastlane.plist`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.example.directory-organizer-fastlane</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/yourname/projects/directory-organizer-local-llm/.venv/bin/python</string>
+      <string>/Users/yourname/projects/directory-organizer-local-llm/scripts/run_directory_organizer.py</string>
+      <string>run</string>
+      <string>--target-dir</string>
+      <string>/Users/yourname/Downloads</string>
+      <string>--fast-lane</string>
+      <string>--preset</string>
+      <string>downloads-default</string>
+      <string>--yes</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>WorkingDirectory</key>
+    <string>/Users/yourname/projects/directory-organizer-local-llm</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/directory-organizer-fastlane.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/directory-organizer-fastlane.err</string>
+  </dict>
+</plist>
+```
+
+読み込み例:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.example.directory-organizer-fastlane.plist
+```
 
 ## テスト
 
 ```bash
-python -m unittest discover -s tests -p 'test_*.py'
+python -m unittest tests.test_directory_organizer
 ```
 
-`uv` を使う場合:
+## 安全設計
 
-```bash
-uv run python -m unittest discover -s tests -p 'test_*.py'
-```
+- delete しない
+- move のみ
+- 相対パスのみ許可
+- 拡張子変更を拒否
+- 衝突時はスキップ
+- apply 前にローカル再検証
+- undo 用 manifest を保存

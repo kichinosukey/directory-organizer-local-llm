@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from dirorganizer.llm_client import LocalLLMClient
@@ -56,6 +56,8 @@ CONTRACT_KEYWORDS = ("contract", "agreement", "nda", "契約")
 class ApplyResult:
     applied_moves: int
     skipped: int
+    applied_operations: list[PlanOperation] = field(default_factory=list)
+    skipped_operations: list[dict[str, str]] = field(default_factory=list)
 
 
 def build_plan(
@@ -69,6 +71,7 @@ def build_plan(
     min_confidence: float,
     mock: bool,
     scan_truncated: bool,
+    heuristic_directory_map: dict[str, str] | None = None,
 ) -> PlanResult:
     warnings: list[str] = []
     if scan_truncated:
@@ -77,7 +80,7 @@ def build_plan(
     raw_operations: list[dict[str, object]] = []
     batch_summaries: list[str] = []
     if mock:
-        raw_operations = _build_mock_operations(files)
+        raw_operations = _build_mock_operations(files, heuristic_directory_map=heuristic_directory_map)
         batch_summaries.append("heuristic planner grouped files by extension and finance keywords")
     else:
         if client is None:
@@ -115,18 +118,34 @@ def build_plan(
 def apply_plan(root: Path, plan: PlanResult) -> ApplyResult:
     applied_moves = 0
     skipped = 0
+    applied_operations: list[PlanOperation] = []
+    skipped_operations: list[dict[str, str]] = []
 
     for operation in plan.operations:
-        if operation.action != "move" or not operation.can_apply:
-            skipped += 1
-            continue
         source_path = root / operation.source
         target_path = root / operation.target_path
+        apply_issue = _validate_apply_operation(root=root, operation=operation, source_path=source_path, target_path=target_path)
+        if apply_issue is not None:
+            skipped += 1
+            skipped_operations.append(
+                {
+                    "source": operation.source,
+                    "target_path": operation.target_path,
+                    "reason": apply_issue,
+                }
+            )
+            continue
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source_path), str(target_path))
         applied_moves += 1
+        applied_operations.append(operation)
 
-    return ApplyResult(applied_moves=applied_moves, skipped=skipped)
+    return ApplyResult(
+        applied_moves=applied_moves,
+        skipped=skipped,
+        applied_operations=applied_operations,
+        skipped_operations=skipped_operations,
+    )
 
 
 def render_plan_markdown(plan: PlanResult) -> str:
@@ -278,29 +297,48 @@ def _request_batch_with_fallback(
         )
 
 
-def _build_mock_operations(files: list[FileRecord]) -> list[dict[str, object]]:
+def build_skipped_operation(record: FileRecord, reason: str, *, issue: str | None = None) -> PlanOperation:
+    cleaned_parent = record.parent_dir if record.parent_dir != "." else ""
+    issues = [issue or reason]
+    return PlanOperation(
+        source=record.relative_path,
+        destination_dir=cleaned_parent,
+        new_name=record.name,
+        target_path=record.relative_path,
+        action="noop",
+        confidence=0.0,
+        reason=reason,
+        can_apply=False,
+        issues=issues,
+    )
+
+
+def _build_mock_operations(
+    files: list[FileRecord], *, heuristic_directory_map: dict[str, str] | None = None
+) -> list[dict[str, object]]:
     operations = []
     for record in files:
-        destination_dir = _heuristic_destination(record)
+        destination_dir = _heuristic_destination(record, heuristic_directory_map=heuristic_directory_map)
         operations.append(
             {
                 "source": record.relative_path,
                 "destination_dir": destination_dir,
                 "new_name": record.name,
                 "reason": "heuristic classification based on extension and filename",
-                "confidence": 0.65,
+                "confidence": 0.85,
             }
         )
     return operations
 
 
-def _heuristic_destination(record: FileRecord) -> str:
+def _heuristic_destination(record: FileRecord, *, heuristic_directory_map: dict[str, str] | None = None) -> str:
     lowered_name = record.name.lower()
     if any(keyword in lowered_name for keyword in FINANCE_KEYWORDS):
         return "documents/finance"
     if any(keyword in lowered_name for keyword in CONTRACT_KEYWORDS):
         return "documents/finance"
-    return HEURISTIC_DIRECTORY_MAP.get(record.extension, "misc")
+    directory_map = heuristic_directory_map or HEURISTIC_DIRECTORY_MAP
+    return directory_map.get(record.extension, "misc")
 
 
 def _validate_operations(
@@ -412,6 +450,40 @@ def _make_operation(
         can_apply=can_apply,
         issues=issues,
     )
+
+
+def _validate_apply_operation(
+    *,
+    root: Path,
+    operation: PlanOperation,
+    source_path: Path,
+    target_path: Path,
+) -> str | None:
+    if operation.action != "move":
+        return "operation is not a move"
+    if not operation.can_apply:
+        return "operation is marked as not applicable"
+    if not source_path.exists():
+        return "source file no longer exists"
+
+    cleaned_destination = _sanitize_relative_directory(operation.destination_dir)
+    if cleaned_destination is None:
+        return "destination_dir is no longer safe"
+
+    cleaned_name = _sanitize_filename(operation.new_name)
+    if cleaned_name is None:
+        return "new_name is no longer safe"
+
+    expected_target = str(PurePosixPath(cleaned_destination) / cleaned_name) if cleaned_destination else cleaned_name
+    if expected_target != operation.target_path:
+        return "target_path does not match destination_dir/new_name"
+
+    if not target_path.is_relative_to(root):
+        return "target path escapes target directory"
+    if target_path.exists() and target_path != source_path:
+        return "target already exists on disk"
+
+    return None
 
 
 def _sanitize_relative_directory(value: str) -> str | None:
