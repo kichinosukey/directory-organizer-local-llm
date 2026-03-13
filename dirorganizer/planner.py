@@ -1,0 +1,446 @@
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from dirorganizer.llm_client import LocalLLMClient
+from dirorganizer.models import FileRecord, PlanOperation, PlanResult
+
+HEURISTIC_DIRECTORY_MAP = {
+    ".png": "media/images",
+    ".jpg": "media/images",
+    ".jpeg": "media/images",
+    ".gif": "media/images",
+    ".webp": "media/images",
+    ".svg": "media/images",
+    ".mp3": "media/audio",
+    ".wav": "media/audio",
+    ".m4a": "media/audio",
+    ".aac": "media/audio",
+    ".mp4": "media/video",
+    ".mov": "media/video",
+    ".mkv": "media/video",
+    ".pdf": "documents/notes",
+    ".md": "documents/notes",
+    ".txt": "documents/notes",
+    ".docx": "documents/notes",
+    ".csv": "documents/spreadsheets",
+    ".tsv": "documents/spreadsheets",
+    ".xlsx": "documents/spreadsheets",
+    ".numbers": "documents/spreadsheets",
+    ".py": "projects/code",
+    ".js": "projects/code",
+    ".ts": "projects/code",
+    ".tsx": "projects/code",
+    ".jsx": "projects/code",
+    ".json": "projects/code",
+    ".yaml": "projects/code",
+    ".yml": "projects/code",
+    ".toml": "projects/code",
+    ".sh": "projects/code",
+    ".zip": "archives",
+    ".tar": "archives",
+    ".gz": "archives",
+    ".7z": "archives",
+    ".dmg": "installers",
+    ".pkg": "installers",
+}
+
+FINANCE_KEYWORDS = ("invoice", "receipt", "estimate", "quote", "請求", "領収", "見積")
+CONTRACT_KEYWORDS = ("contract", "agreement", "nda", "契約")
+
+
+@dataclass
+class ApplyResult:
+    applied_moves: int
+    skipped: int
+
+
+def build_plan(
+    *,
+    root: Path,
+    files: list[FileRecord],
+    existing_dirs: list[str],
+    rules: dict[str, object],
+    client: LocalLLMClient | None,
+    batch_size: int,
+    min_confidence: float,
+    mock: bool,
+    scan_truncated: bool,
+) -> PlanResult:
+    warnings: list[str] = []
+    if scan_truncated:
+        warnings.append("scan truncated because max_files limit was reached")
+
+    raw_operations: list[dict[str, object]] = []
+    batch_summaries: list[str] = []
+    if mock:
+        raw_operations = _build_mock_operations(files)
+        batch_summaries.append("heuristic planner grouped files by extension and finance keywords")
+    else:
+        if client is None:
+            raise ValueError("client is required when mock is false")
+        for index in range(0, len(files), batch_size):
+            batch = files[index : index + batch_size]
+            payload, batch_warnings = _request_batch_with_fallback(
+                client=client,
+                root=root,
+                files=batch,
+                existing_dirs=existing_dirs,
+                rules=rules,
+                batch_size=batch_size,
+            )
+            warnings.extend(batch_warnings)
+            operations = payload.get("operations", [])
+            if not isinstance(operations, list):
+                raise RuntimeError("LLM payload did not contain operations list")
+            raw_operations.extend(operations)
+            summary = payload.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                batch_summaries.append(summary.strip())
+
+    operations, validation_warnings = _validate_operations(
+        root=root,
+        files=files,
+        raw_operations=raw_operations,
+        min_confidence=min_confidence,
+    )
+    warnings.extend(validation_warnings)
+    summary = " / ".join(batch_summaries) if batch_summaries else "no summary"
+    return PlanResult(summary=summary, operations=operations, warnings=warnings)
+
+
+def apply_plan(root: Path, plan: PlanResult) -> ApplyResult:
+    applied_moves = 0
+    skipped = 0
+
+    for operation in plan.operations:
+        if operation.action != "move" or not operation.can_apply:
+            skipped += 1
+            continue
+        source_path = root / operation.source
+        target_path = root / operation.target_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_path), str(target_path))
+        applied_moves += 1
+
+    return ApplyResult(applied_moves=applied_moves, skipped=skipped)
+
+
+def render_plan_markdown(plan: PlanResult) -> str:
+    lines = [
+        "# Directory Organizer Plan",
+        "",
+        f"Summary: {plan.summary}",
+        "",
+        "## Warnings",
+    ]
+    if plan.warnings:
+        lines.extend([f"- {warning}" for warning in plan.warnings])
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## Operations",
+            "",
+            "| source | target | action | confidence | apply | reason |",
+            "|---|---|---|---:|---|---|",
+        ]
+    )
+    for operation in plan.operations:
+        reason = operation.reason.replace("|", "/")
+        apply_flag = "yes" if operation.can_apply else "no"
+        lines.append(
+            f"| `{operation.source}` | `{operation.target_path}` | {operation.action} "
+            f"| {operation.confidence:.2f} | {apply_flag} | {reason} |"
+        )
+        if operation.issues:
+            issue_text = "; ".join(operation.issues).replace("|", "/")
+            lines.append(f"|  |  |  |  |  | issue: {issue_text} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _request_batch(
+    *,
+    client: LocalLLMClient,
+    root: Path,
+    files: list[FileRecord],
+    existing_dirs: list[str],
+    rules: dict[str, object],
+) -> dict[str, object]:
+    system_prompt = """
+You are a careful filesystem organizer.
+Return JSON only.
+You must never suggest deleting files.
+You must keep every destination_dir relative to the provided target root.
+You must keep file extensions unchanged.
+Prefer existing directories when they match the taxonomy.
+Output shape:
+{
+  "summary": "short summary",
+  "operations": [
+    {
+      "source": "relative/path.ext",
+      "destination_dir": "documents/notes",
+      "new_name": "path.ext",
+      "reason": "short reason",
+      "confidence": 0.84
+    }
+  ]
+}
+""".strip()
+    user_prompt = json.dumps(
+        {
+            "target_root": str(root),
+            "rules": rules,
+            "existing_dirs": existing_dirs,
+            "files": [record.prompt_dict() for record in files],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return client.chat_json(system_prompt, user_prompt)
+
+
+def _request_batch_with_fallback(
+    *,
+    client: LocalLLMClient,
+    root: Path,
+    files: list[FileRecord],
+    existing_dirs: list[str],
+    rules: dict[str, object],
+    batch_size: int,
+) -> tuple[dict[str, object], list[str]]:
+    try:
+        return (
+            _request_batch(
+                client=client,
+                root=root,
+                files=files,
+                existing_dirs=existing_dirs,
+                rules=rules,
+            ),
+            [],
+        )
+    except Exception as exc:  # noqa: BLE001
+        if len(files) == 1:
+            record = files[0]
+            return (
+                {
+                    "summary": f"heuristic fallback for {record.relative_path}",
+                    "operations": _build_mock_operations(files),
+                },
+                [f"LLM failed for {record.relative_path}; used heuristic fallback: {exc}"],
+            )
+
+        midpoint = max(1, min(len(files) - 1, batch_size // 2, len(files) // 2))
+        left_payload, left_warnings = _request_batch_with_fallback(
+            client=client,
+            root=root,
+            files=files[:midpoint],
+            existing_dirs=existing_dirs,
+            rules=rules,
+            batch_size=max(1, midpoint),
+        )
+        right_payload, right_warnings = _request_batch_with_fallback(
+            client=client,
+            root=root,
+            files=files[midpoint:],
+            existing_dirs=existing_dirs,
+            rules=rules,
+            batch_size=max(1, len(files) - midpoint),
+        )
+        merged_operations = []
+        left_operations = left_payload.get("operations", [])
+        if isinstance(left_operations, list):
+            merged_operations.extend(left_operations)
+        right_operations = right_payload.get("operations", [])
+        if isinstance(right_operations, list):
+            merged_operations.extend(right_operations)
+        summaries = []
+        for payload in (left_payload, right_payload):
+            summary = payload.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                summaries.append(summary.strip())
+        warnings = [f"LLM batch retry split {len(files)} files after error: {exc}"]
+        warnings.extend(left_warnings)
+        warnings.extend(right_warnings)
+        return (
+            {
+                "summary": " / ".join(summaries) if summaries else f"split fallback for {len(files)} files",
+                "operations": merged_operations,
+            },
+            warnings,
+        )
+
+
+def _build_mock_operations(files: list[FileRecord]) -> list[dict[str, object]]:
+    operations = []
+    for record in files:
+        destination_dir = _heuristic_destination(record)
+        operations.append(
+            {
+                "source": record.relative_path,
+                "destination_dir": destination_dir,
+                "new_name": record.name,
+                "reason": "heuristic classification based on extension and filename",
+                "confidence": 0.65,
+            }
+        )
+    return operations
+
+
+def _heuristic_destination(record: FileRecord) -> str:
+    lowered_name = record.name.lower()
+    if any(keyword in lowered_name for keyword in FINANCE_KEYWORDS):
+        return "documents/finance"
+    if any(keyword in lowered_name for keyword in CONTRACT_KEYWORDS):
+        return "documents/finance"
+    return HEURISTIC_DIRECTORY_MAP.get(record.extension, "misc")
+
+
+def _validate_operations(
+    *,
+    root: Path,
+    files: list[FileRecord],
+    raw_operations: list[dict[str, object]],
+    min_confidence: float,
+) -> tuple[list[PlanOperation], list[str]]:
+    files_by_source = {record.relative_path: record for record in files}
+    operations_by_source: dict[str, dict[str, object]] = {}
+    warnings: list[str] = []
+
+    for item in raw_operations:
+        source = item.get("source")
+        if isinstance(source, str) and source in files_by_source:
+            operations_by_source[source] = item
+
+    for source in files_by_source:
+        if source not in operations_by_source:
+            warnings.append(f"missing LLM operation for {source}; keeping file in place")
+
+    operations: list[PlanOperation] = []
+    target_to_source: dict[str, str] = {}
+    for source, record in files_by_source.items():
+        raw = operations_by_source.get(source)
+        if raw is None:
+            operation = _make_operation(
+                record=record,
+                destination_dir=record.parent_dir if record.parent_dir != "." else "",
+                new_name=record.name,
+                reason="no LLM proposal received",
+                confidence=0.0,
+                min_confidence=min_confidence,
+            )
+        else:
+            operation = _make_operation(
+                record=record,
+                destination_dir=str(raw.get("destination_dir", "")),
+                new_name=str(raw.get("new_name", record.name)),
+                reason=str(raw.get("reason", "no reason provided")),
+                confidence=_coerce_confidence(raw.get("confidence")),
+                min_confidence=min_confidence,
+            )
+
+        existing_source = target_to_source.get(operation.target_path)
+        if existing_source and existing_source != operation.source:
+            operation.can_apply = False
+            operation.issues.append(f"target collision with {existing_source}")
+        else:
+            target_to_source[operation.target_path] = operation.source
+
+        absolute_target = root / operation.target_path
+        absolute_source = root / operation.source
+        if absolute_target.exists() and absolute_target != absolute_source:
+            operation.can_apply = False
+            operation.issues.append("target already exists on disk")
+
+        operations.append(operation)
+
+    return operations, warnings
+
+
+def _make_operation(
+    *,
+    record: FileRecord,
+    destination_dir: str,
+    new_name: str,
+    reason: str,
+    confidence: float,
+    min_confidence: float,
+) -> PlanOperation:
+    issues: list[str] = []
+    cleaned_destination = _sanitize_relative_directory(destination_dir)
+    if cleaned_destination is None:
+        cleaned_destination = record.parent_dir if record.parent_dir != "." else ""
+        issues.append("invalid destination_dir; kept original directory")
+
+    cleaned_name = _sanitize_filename(new_name)
+    if cleaned_name is None:
+        cleaned_name = record.name
+        issues.append("invalid new_name; kept original filename")
+
+    if record.extension:
+        candidate_suffix = Path(cleaned_name).suffix.lower()
+        if candidate_suffix != record.extension.lower():
+            cleaned_name = f"{Path(cleaned_name).stem}{record.extension}"
+            issues.append("extension change was blocked")
+
+    target_path = str(PurePosixPath(cleaned_destination) / cleaned_name) if cleaned_destination else cleaned_name
+    action = "noop" if target_path == record.relative_path else "move"
+    can_apply = action == "move" and confidence >= min_confidence and not issues
+
+    if confidence < min_confidence and action == "move":
+        issues.append(f"confidence below threshold {min_confidence:.2f}")
+        can_apply = False
+
+    if action == "noop":
+        can_apply = False
+
+    return PlanOperation(
+        source=record.relative_path,
+        destination_dir=cleaned_destination,
+        new_name=cleaned_name,
+        target_path=target_path,
+        action=action,
+        confidence=confidence,
+        reason=reason,
+        can_apply=can_apply,
+        issues=issues,
+    )
+
+
+def _sanitize_relative_directory(value: str) -> str | None:
+    candidate = value.strip().strip("/")
+    if candidate in {"", "."}:
+        return ""
+    path = PurePosixPath(candidate)
+    if path.is_absolute():
+        return None
+    if any(part in {"..", "."} for part in path.parts):
+        return None
+    return path.as_posix()
+
+
+def _sanitize_filename(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    path = PurePosixPath(candidate)
+    if path.is_absolute():
+        return None
+    if len(path.parts) != 1:
+        return None
+    if path.name in {".", ".."}:
+        return None
+    return path.name
+
+
+def _coerce_confidence(value: object) -> float:
+    if isinstance(value, (float, int)):
+        return max(0.0, min(1.0, float(value)))
+    return 0.0
