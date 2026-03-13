@@ -31,6 +31,20 @@ class PlanOperation:
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "PlanOperation":
+        return cls(
+            source=str(payload["source"]),
+            destination_dir=str(payload.get("destination_dir", "")),
+            new_name=str(payload.get("new_name", "")),
+            target_path=str(payload["target_path"]),
+            action=str(payload.get("action", "noop")),
+            confidence=float(payload.get("confidence", 0.0)),
+            reason=str(payload.get("reason", "")),
+            can_apply=bool(payload.get("can_apply", False)),
+            issues=[str(item) for item in payload.get("issues", [])],
+        )
+
 
 @dataclass
 class PlanResult:
@@ -44,3 +58,11 @@ class PlanResult:
             "warnings": list(self.warnings),
             "operations": [operation.as_dict() for operation in self.operations],
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "PlanResult":
+        return cls(
+            summary=str(payload.get("summary", "")),
+            warnings=[str(item) for item in payload.get("warnings", [])],
+            operations=[PlanOperation.from_dict(item) for item in payload.get("operations", [])],
+        )
