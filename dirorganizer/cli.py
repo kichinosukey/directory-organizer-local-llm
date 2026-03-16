@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -88,6 +88,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             parser.error("--target-dir/--source is required unless DIRECTORY_ORGANIZER_TARGET_DIR is set")
         if not args.mock and not (args.model or "").strip():
             parser.error("--model is required unless --mock is used")
+        args.extra_body = _parse_extra_body_json(args.extra_body_json, parser)
     return args
 
 
@@ -102,17 +103,23 @@ def _add_source_arguments(parser: argparse.ArgumentParser, *, include_yes: bool)
     parser.add_argument(
         "--model",
         default=os.getenv("LOCAL_LLM_MODEL"),
-        help="OpenAI-compatible local model name",
+        help="Local planner model name",
     )
     parser.add_argument(
         "--base-url",
         default=os.getenv("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1"),
-        help="OpenAI-compatible base URL",
+        help="Local OpenAI-compatible base URL or full endpoint URL",
     )
     parser.add_argument(
         "--api-key",
         default=os.getenv("LOCAL_LLM_API_KEY", "not-needed"),
         help="API key if your local endpoint requires one",
+    )
+    parser.add_argument(
+        "--api-mode",
+        choices=("chat_completions", "responses"),
+        default=os.getenv("LOCAL_LLM_API_MODE", "chat_completions"),
+        help="API mode for local OpenAI-compatible endpoints",
     )
     parser.add_argument("--rules", help="Optional JSON file that customizes taxonomy and instructions")
     parser.add_argument("--output-dir", help="Artifact directory root")
@@ -123,6 +130,11 @@ def _add_source_arguments(parser: argparse.ArgumentParser, *, include_yes: bool)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--max-output-tokens", type=int, default=1200)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--extra-body-json",
+        default=os.getenv("LOCAL_LLM_EXTRA_BODY_JSON"),
+        help="Extra JSON object merged into local planner payloads",
+    )
     parser.add_argument("--include-hidden", action="store_true")
     parser.add_argument("--mock", action="store_true", help="Use heuristic planner instead of LLM")
     parser.add_argument("--fast-lane", action="store_true", help="Use the fast-lane preset constraints")
@@ -306,6 +318,7 @@ def _build_plan_artifacts(
             plan_warnings.append(f"fast lane skipped {len(filter_result.skipped)} files before planning")
 
     rules = load_rules(args.rules, preset_name=args.preset)
+    planner_client = build_client(args)
     build_started_at = time.perf_counter()
     if selected_files:
         plan = build_plan(
@@ -313,17 +326,25 @@ def _build_plan_artifacts(
             files=selected_files,
             existing_dirs=existing_dirs,
             rules=rules,
-            client=build_client(args),
+            client=planner_client,
             batch_size=settings.batch_size,
             min_confidence=settings.min_confidence,
             mock=args.mock,
             scan_truncated=scan_truncated,
             heuristic_directory_map=settings.heuristic_directory_map,
+            progress_callback=None if args.mock else lambda message: _write_planner_progress(stderr, message),
         )
     else:
         empty_summary = "no eligible files selected for fast lane"
         plan = PlanResult(summary=empty_summary, operations=[], warnings=["no fast-lane eligible files found"])
     plan_seconds = time.perf_counter() - build_started_at
+    llm_seconds = round(planner_client.request_seconds if planner_client is not None else 0.0, 4)
+    validation_seconds = round(max(plan_seconds - llm_seconds, 0.0), 4)
+    planner = _build_planner_manifest_section(
+        client=planner_client,
+        batch_size=settings.batch_size,
+        mock=args.mock,
+    )
 
     combined_plan = PlanResult(
         summary=plan.summary,
@@ -337,12 +358,14 @@ def _build_plan_artifacts(
         files_scanned=len(files),
         files_considered=len(selected_files),
     )
-    created_at = datetime.now(tz=timezone.utc).isoformat()
+    created_at = _now_local().isoformat()
     run_dir = create_run_dir(output_root)
 
     timings = {
         "scan_seconds": round(scan_seconds, 4),
         "plan_seconds": round(plan_seconds, 4),
+        "llm_seconds": llm_seconds,
+        "validation_seconds": validation_seconds,
         "save_seconds": 0.0,
         "apply_seconds": 0.0,
         "processing_seconds": 0.0,
@@ -356,6 +379,7 @@ def _build_plan_artifacts(
         "fast_lane": settings.fast_lane,
         "preset": args.preset,
         "rules": rules,
+        "planner": planner,
         "summary": combined_plan.summary,
         "counts": counts,
         "warnings": combined_plan.warnings,
@@ -367,7 +391,10 @@ def _build_plan_artifacts(
     _write_plan_artifacts(run_dir=run_dir, plan=combined_plan, manifest=manifest)
     save_seconds = time.perf_counter() - save_started_at
     manifest["timings"]["save_seconds"] = round(save_seconds, 4)
-    manifest["timings"]["processing_seconds"] = round(scan_seconds + plan_seconds + save_seconds, 4)
+    manifest["timings"]["processing_seconds"] = round(
+        scan_seconds + plan_seconds + save_seconds,
+        4,
+    )
     manifest["timings"]["total_seconds"] = manifest["timings"]["processing_seconds"]
     (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return combined_plan, run_dir, manifest
@@ -416,7 +443,7 @@ def _apply_manifest(manifest_path: Path, *, command_started_at: float) -> dict[s
 
     undo_manifest = {
         "version": MANIFEST_VERSION,
-        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "created_at": _now_local().isoformat(),
         "target_dir": str(target_dir),
         "operations": [
             {
@@ -454,10 +481,52 @@ def build_client(args: argparse.Namespace) -> LocalLLMClient | None:
         base_url=args.base_url,
         model=args.model,
         api_key=args.api_key,
+        api_mode=args.api_mode,
+        extra_body=args.extra_body,
         timeout=args.timeout,
         temperature=args.temperature,
         max_output_tokens=args.max_output_tokens,
     )
+
+
+def _build_planner_manifest_section(
+    *,
+    client: LocalLLMClient | None,
+    batch_size: int,
+    mock: bool,
+) -> dict[str, object]:
+    if mock or client is None:
+        return {
+            "provider": "mock",
+            "transport": "heuristic",
+            "api_mode": "mock",
+            "model": "mock",
+            "host": None,
+            "batch_size": batch_size,
+            "llm_request_count": 0,
+        }
+
+    return {
+        "provider": "local",
+        "transport": "openai-compatible",
+        "api_mode": client.api_mode,
+        "model": client.model,
+        "host": client.host(),
+        "batch_size": batch_size,
+        "llm_request_count": client.request_count,
+    }
+
+
+def _parse_extra_body_json(value: str | None, parser: argparse.ArgumentParser) -> dict[str, object]:
+    if value is None or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        parser.error(f"--extra-body-json must be valid JSON: {exc}")
+    if not isinstance(parsed, dict):
+        parser.error("--extra-body-json must decode to a JSON object")
+    return parsed
 
 
 def resolve_configured_path(value: str) -> Path:
@@ -470,12 +539,12 @@ def resolve_output_root(configured_output_dir: str | None, target_dir: Path) -> 
     env_output_dir = os.getenv("DIRECTORY_ORGANIZER_OUTPUT_DIR")
     if env_output_dir:
         return resolve_configured_path(env_output_dir)
-    return target_dir / ".dirorganizer-runs"
+    return REPO_ROOT / ".dirorganizer-runs"
 
 
 def create_run_dir(output_root: Path) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
-    run_id = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = _now_local().strftime("%Y%m%dT%H%M%S%z")
     run_dir = output_root / run_id
     suffix = 0
     while run_dir.exists():
@@ -483,6 +552,10 @@ def create_run_dir(output_root: Path) -> Path:
         run_dir = output_root / f"{run_id}_{suffix:02d}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
+
+
+def _now_local() -> datetime:
+    return datetime.now().astimezone()
 
 
 def _build_extra_ignores(*, output_root: Path, target_dir: Path) -> set[str]:
@@ -585,6 +658,11 @@ def _write_fast_lane_summary(*, plan: PlanResult, manifest: dict[str, object], s
     else:
         for index, operation in enumerate(top_moves, start=1):
             stdout.write(f"{index}. {operation.source} -> {operation.target_path}\n")
+
+
+def _write_planner_progress(stderr: TextIO, message: str) -> None:
+    stderr.write(f"[planner] {message}\n")
+    stderr.flush()
 
 
 def _prompt_for_apply(*, run_dir: Path, stdin: TextIO, stdout: TextIO) -> bool:

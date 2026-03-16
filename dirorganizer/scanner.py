@@ -70,7 +70,11 @@ def scan_directory(
                 continue
             absolute_path = current_path / filename
             relative_path = absolute_path.relative_to(root).as_posix()
-            stat = absolute_path.stat()
+            try:
+                stat = absolute_path.stat()
+            except (FileNotFoundError, PermissionError, OSError):
+                # Files in Downloads-like directories can disappear or become inaccessible mid-scan.
+                continue
             files.append(
                 FileRecord(
                     relative_path=relative_path,

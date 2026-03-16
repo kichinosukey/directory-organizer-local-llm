@@ -17,18 +17,29 @@
 ## 前提
 
 - Python 3.10 以上
-- ローカル LLM の OpenAI 互換 API
+- ローカルで動く OpenAI 互換 endpoint
   - LM Studio
-  - Ollama の OpenAI 互換エンドポイント
-  - LocalAI など
+  - Ollama の OpenAI 互換 endpoint
+  - LocalAI
+  - そのほか手元マシン上の互換 server
 
 `.env` はリポジトリ直下から自動で読み込みます。最低限、以下を設定してください。
 
 ```dotenv
-LOCAL_LLM_MODEL=openai/gpt-oss-20b
+LOCAL_LLM_MODEL=Qwen/Qwen3-8B-AWQ
 LOCAL_LLM_BASE_URL=http://127.0.0.1:1234/v1
 LOCAL_LLM_API_KEY=not-needed
 ```
+
+高度な local endpoint を使う場合だけ、追加で以下を使えます。
+
+```dotenv
+LOCAL_LLM_API_MODE=chat_completions
+LOCAL_LLM_EXTRA_BODY_JSON={"chat_template_kwargs":{"enable_thinking":false}}
+```
+
+`LOCAL_LLM_API_MODE` は `chat_completions` と `responses` を切り替えます。  
+`LOCAL_LLM_EXTRA_BODY_JSON` は local endpoint が追加パラメータを受け取れる場合だけ使ってください。
 
 ## セットアップ
 
@@ -56,7 +67,7 @@ source .venv/bin/activate
 python scripts/run_directory_organizer.py \
   plan \
   --target-dir ~/Downloads/messy-folder \
-  --model openai/gpt-oss-20b
+  --model Qwen/Qwen3-8B-AWQ
 ```
 
 ### 2. plan -> apply を一気通貫で実行する
@@ -65,7 +76,7 @@ python scripts/run_directory_organizer.py \
 python scripts/run_directory_organizer.py \
   run \
   --target-dir ~/Downloads/messy-folder \
-  --model openai/gpt-oss-20b
+  --model Qwen/Qwen3-8B-AWQ
 ```
 
 TTY 上では plan 要約を出した後に `[a] apply / [v] view details / [q] quit` を受け付けます。  
@@ -75,7 +86,7 @@ TTY 上では plan 要約を出した後に `[a] apply / [v] view details / [q] 
 python scripts/run_directory_organizer.py \
   run \
   --target-dir ~/Downloads/messy-folder \
-  --model openai/gpt-oss-20b \
+  --model Qwen/Qwen3-8B-AWQ \
   --yes
 ```
 
@@ -84,7 +95,7 @@ python scripts/run_directory_organizer.py \
 ```bash
 python scripts/run_directory_organizer.py \
   apply \
-  --manifest ~/Downloads/messy-folder/.dirorganizer-runs/20260313T160000Z/manifest.json
+  --manifest /Users/kichinosukey-mba/projects/directory-organizer-local-llm/.dirorganizer-runs/20260316T204530+0900/manifest.json
 ```
 
 ### 4. Fast Lane を使う
@@ -95,7 +106,7 @@ python scripts/run_directory_organizer.py \
   --target-dir ~/Downloads \
   --fast-lane \
   --preset downloads-default \
-  --model openai/gpt-oss-20b
+  --model Qwen/Qwen3-8B-AWQ
 ```
 
 Fast Lane は以下の既定制限で動きます。
@@ -108,7 +119,18 @@ Fast Lane は以下の既定制限で動きます。
 - `100 MiB` 超のファイルはスキップ
 - 更新日時の新しい順で候補を絞り込み
 
-### 5. mock で挙動確認する
+### 5. `responses` API や追加 payload を使う
+
+```bash
+python scripts/run_directory_organizer.py \
+  plan \
+  --target-dir ~/Downloads \
+  --model Qwen/Qwen3-8B-AWQ \
+  --api-mode responses \
+  --extra-body-json '{"chat_template_kwargs":{"enable_thinking":false}}'
+```
+
+### 6. mock で挙動確認する
 
 ```bash
 python scripts/run_directory_organizer.py \
@@ -131,8 +153,10 @@ python scripts/run_directory_organizer.py \
 | `--model` | 使用モデル名 |
 | `--base-url` | OpenAI 互換 API ベース URL |
 | `--api-key` | API キー |
+| `--api-mode` | `chat_completions` または `responses` |
+| `--extra-body-json` | local planner payload へ追加で merge する JSON object |
 | `--rules` | 追加ルール JSON |
-| `--output-dir` | 成果物保存先 |
+| `--output-dir` | 成果物保存先。未指定時はリポジトリ直下の `.dirorganizer-runs/` |
 | `--max-files` | 通常モードでは走査上限、Fast Lane では候補上限 |
 | `--max-depth` | 走査深さの上限 |
 | `--batch-size` | LLM へ渡す件数 |
@@ -161,7 +185,8 @@ preset には taxonomy, rename_style, allowed_extensions, confidence threshold, 
 
 ## 成果物
 
-各実行で `<output-dir>/<run_id>/` を作成し、以下を保存します。
+各実行で `<output-dir>/<run_id>/` を作成し、以下を保存します。  
+`--output-dir` 未指定時の既定値は、このリポジトリ直下の `.dirorganizer-runs/` です。
 
 - `plan.json`
 - `plan.md`
@@ -174,13 +199,22 @@ preset には taxonomy, rename_style, allowed_extensions, confidence threshold, 
 ```json
 {
   "version": 2,
-  "created_at": "2026-03-13T12:00:00+00:00",
+  "created_at": "2026-03-16T20:45:30+09:00",
   "target_dir": "/path/to/target",
   "mode": "run",
   "fast_lane": true,
   "preset": "downloads-default",
   "rules": {},
   "summary": "short summary",
+  "planner": {
+    "provider": "local",
+    "transport": "openai-compatible",
+    "api_mode": "chat_completions",
+    "model": "Qwen/Qwen3-8B-AWQ",
+    "host": "127.0.0.1",
+    "batch_size": 15,
+    "llm_request_count": 2
+  },
   "counts": {
     "files_scanned": 34,
     "files_considered": 30,
@@ -194,6 +228,8 @@ preset には taxonomy, rename_style, allowed_extensions, confidence threshold, 
   "timings": {
     "scan_seconds": 1.5,
     "plan_seconds": 9.1,
+    "llm_seconds": 7.8,
+    "validation_seconds": 1.3,
     "save_seconds": 0.2,
     "apply_seconds": 1.1,
     "processing_seconds": 10.8,
@@ -206,7 +242,7 @@ preset には taxonomy, rename_style, allowed_extensions, confidence threshold, 
 CLI の最後には結果行を 1 行出力します。
 
 ```text
-[RESULT] mode=run status=success run_dir=/.../20260313T160000Z planned_moves=18 applied_moves=18 skipped=12
+[RESULT] mode=run status=success run_dir=/.../20260316T204530+0900 planned_moves=18 applied_moves=18 skipped=12
 ```
 
 ## 通常モードと Fast Lane の違い
@@ -223,6 +259,50 @@ CLI の最後には結果行を 1 行出力します。
 - 高信頼な候補だけを短時間で処理
 - `apply --manifest` で再推論しない
 - 定期実行向き
+
+## ベンチマーク
+
+`scripts/benchmark_planner.py` は 2 つの local planner profile を `baseline` と `candidate` として比較します。  
+このベンチは `run` ではなく `plan` を実行するので、ファイルは移動されません。
+
+LM Studio と Ollama を比較する例:
+
+```bash
+python scripts/benchmark_planner.py \
+  --baseline-model Qwen/Qwen3-8B-AWQ \
+  --baseline-base-url http://127.0.0.1:1234/v1 \
+  --baseline-api-key not-needed \
+  --candidate-model qwen2.5:7b-instruct \
+  --candidate-base-url http://127.0.0.1:11434/v1 \
+  --candidate-api-key not-needed \
+  --real-target-dir ~/Downloads \
+  --format markdown
+```
+
+同じ local server の設定差を比較する例:
+
+```bash
+python scripts/benchmark_planner.py \
+  --baseline-model Qwen/Qwen3-8B-AWQ \
+  --baseline-base-url http://127.0.0.1:1234/v1 \
+  --candidate-model Qwen/Qwen3-8B-AWQ \
+  --candidate-base-url http://127.0.0.1:1234/v1 \
+  --candidate-extra-body-json '{"chat_template_kwargs":{"enable_thinking":false}}' \
+  --skip-fixture \
+  --full-scan \
+  --runs 1 \
+  --batch-size 20 \
+  --timeout 180 \
+  --real-target-dir ~/Downloads \
+  --format markdown
+```
+
+既定の計測条件:
+
+- warmup 1 回
+- measured 5 回
+- fixture corpus 30 件
+- 比較指標は `plan_seconds`, `llm_seconds`, `processing_seconds`, `llm_request_count`
 
 ## 定期実行
 
@@ -273,7 +353,7 @@ launchctl load ~/Library/LaunchAgents/com.example.directory-organizer-fastlane.p
 ## テスト
 
 ```bash
-python -m unittest tests.test_directory_organizer
+python -m unittest discover -s tests -q
 ```
 
 ## 安全設計
