@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from dirorganizer.llm_client import LocalLLMClient
 from dirorganizer.models import FileRecord, PlanOperation, PlanResult
@@ -50,6 +52,7 @@ HEURISTIC_DIRECTORY_MAP = {
 
 FINANCE_KEYWORDS = ("invoice", "receipt", "estimate", "quote", "請求", "領収", "見積")
 CONTRACT_KEYWORDS = ("contract", "agreement", "nda", "契約")
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass
@@ -72,6 +75,7 @@ def build_plan(
     mock: bool,
     scan_truncated: bool,
     heuristic_directory_map: dict[str, str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> PlanResult:
     warnings: list[str] = []
     if scan_truncated:
@@ -85,8 +89,21 @@ def build_plan(
     else:
         if client is None:
             raise ValueError("client is required when mock is false")
-        for index in range(0, len(files), batch_size):
+        total_started_at = time.perf_counter()
+        total_batches = max(1, (len(files) + batch_size - 1) // batch_size)
+        if progress_callback is not None:
+            progress_callback(
+                f"planning {len(files)} files in {total_batches} batches (batch_size={batch_size})"
+            )
+        for batch_index, index in enumerate(range(0, len(files), batch_size), start=1):
             batch = files[index : index + batch_size]
+            batch_label = (
+                f"batch {batch_index}/{total_batches} "
+                f"(files {index + 1}-{index + len(batch)} of {len(files)})"
+            )
+            if progress_callback is not None:
+                progress_callback(batch_label)
+            batch_started_at = time.perf_counter()
             payload, batch_warnings = _request_batch_with_fallback(
                 client=client,
                 root=root,
@@ -94,7 +111,10 @@ def build_plan(
                 existing_dirs=existing_dirs,
                 rules=rules,
                 batch_size=batch_size,
+                progress_callback=progress_callback,
+                batch_label=batch_label,
             )
+            batch_finished_at = time.perf_counter()
             warnings.extend(batch_warnings)
             operations = payload.get("operations", [])
             if not isinstance(operations, list):
@@ -103,6 +123,13 @@ def build_plan(
             summary = payload.get("summary")
             if isinstance(summary, str) and summary.strip():
                 batch_summaries.append(summary.strip())
+            if progress_callback is not None:
+                processed_files = min(index + len(batch), len(files))
+                progress_callback(
+                    f"completed {batch_label} in {batch_finished_at - batch_started_at:.1f}s "
+                    f"(processed {processed_files}/{len(files)} files, "
+                    f"elapsed {batch_finished_at - total_started_at:.1f}s)"
+                )
 
     operations, validation_warnings = _validate_operations(
         root=root,
@@ -233,6 +260,8 @@ def _request_batch_with_fallback(
     existing_dirs: list[str],
     rules: dict[str, object],
     batch_size: int,
+    progress_callback: ProgressCallback | None = None,
+    batch_label: str | None = None,
 ) -> tuple[dict[str, object], list[str]]:
     try:
         return (
@@ -246,8 +275,15 @@ def _request_batch_with_fallback(
             [],
         )
     except Exception as exc:  # noqa: BLE001
+        if progress_callback is not None:
+            context = batch_label or "batch"
+            progress_callback(
+                f"{context} request failed for {len(files)} files: {_summarize_progress_error(exc)}"
+            )
         if len(files) == 1:
             record = files[0]
+            if progress_callback is not None:
+                progress_callback(f"{batch_label or 'batch'} heuristic fallback for {record.relative_path}")
             return (
                 {
                     "summary": f"heuristic fallback for {record.relative_path}",
@@ -257,6 +293,10 @@ def _request_batch_with_fallback(
             )
 
         midpoint = max(1, min(len(files) - 1, batch_size // 2, len(files) // 2))
+        if progress_callback is not None:
+            progress_callback(
+                f"{batch_label or 'batch'} split into {midpoint} and {len(files) - midpoint} files"
+            )
         left_payload, left_warnings = _request_batch_with_fallback(
             client=client,
             root=root,
@@ -264,6 +304,8 @@ def _request_batch_with_fallback(
             existing_dirs=existing_dirs,
             rules=rules,
             batch_size=max(1, midpoint),
+            progress_callback=progress_callback,
+            batch_label=f"{batch_label or 'batch'} L",
         )
         right_payload, right_warnings = _request_batch_with_fallback(
             client=client,
@@ -272,6 +314,8 @@ def _request_batch_with_fallback(
             existing_dirs=existing_dirs,
             rules=rules,
             batch_size=max(1, len(files) - midpoint),
+            progress_callback=progress_callback,
+            batch_label=f"{batch_label or 'batch'} R",
         )
         merged_operations = []
         left_operations = left_payload.get("operations", [])
@@ -295,6 +339,13 @@ def _request_batch_with_fallback(
             },
             warnings,
         )
+
+
+def _summarize_progress_error(exc: Exception, *, max_length: int = 160) -> str:
+    message = str(exc).strip().replace("\n", " ")
+    if len(message) <= max_length:
+        return message
+    return f"{message[: max_length - 3]}..."
 
 
 def build_skipped_operation(record: FileRecord, reason: str, *, issue: str | None = None) -> PlanOperation:
