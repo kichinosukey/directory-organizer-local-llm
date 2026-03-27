@@ -146,7 +146,8 @@ class ReviewQueueApiTests(unittest.TestCase):
 
             self.assertTrue(moved)
             self.assertTrue(blocked_after)
-            self.assertTrue((dataset.source_dir / "documents" / "finance").exists())
+            self.assertTrue((dataset.organized_dir / "documents" / "finance").exists())
+            self.assertTrue((dataset.organized_dir / "documents" / "finance" / "receipt-2026-03.pdf").exists())
 
 
 @unittest.skipIf(QtWidgets is None, "PySide6 is not installed")

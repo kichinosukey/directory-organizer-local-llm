@@ -42,17 +42,21 @@ def prepare_demo_dataset(
     source_dir = run_root / "source"
     organized_dir = run_root / "organized"
     source_dir.mkdir(parents=True, exist_ok=False)
+    (organized_dir / "documents" / "notes").mkdir(parents=True, exist_ok=False)
     (organized_dir / "documents" / "finance" / "receipts").mkdir(parents=True, exist_ok=False)
     invoices_dir = organized_dir / "documents" / "finance" / "invoices"
     invoices_dir.mkdir(parents=True, exist_ok=False)
     (organized_dir / "documents" / "finance" / "contracts").mkdir(parents=True, exist_ok=False)
+    (organized_dir / "media" / "images").mkdir(parents=True, exist_ok=False)
+
+    _link_demo_destination(source_dir / "documents", organized_dir / "documents")
+    _link_demo_destination(source_dir / "media", organized_dir / "media")
 
     for relative_path, payload in DEMO_FILES:
         (source_dir / relative_path).write_bytes(payload)
 
     # Precreate a collision so the review queue shows a blocked item on first scan.
-    (source_dir / "documents" / "finance").mkdir(parents=True, exist_ok=True)
-    (source_dir / "documents" / "finance" / COLLISION_FILENAME).write_bytes(
+    (organized_dir / "documents" / "finance" / COLLISION_FILENAME).write_bytes(
         b"%PDF-1.4\n% existing target\n"
     )
 
@@ -81,6 +85,15 @@ def _build_run_root(*, base_root: Path, name: str | None, overwrite: bool) -> Pa
     else:
         run_root.mkdir(parents=True, exist_ok=False)
     return run_root
+
+
+def _link_demo_destination(link_path: Path, target_path: Path) -> None:
+    try:
+        link_path.symlink_to(target_path, target_is_directory=True)
+    except OSError:
+        # Fallback for environments that do not allow symlinks. This keeps the demo usable,
+        # but the organized/ mirror will not reflect moves outside this tree automatically.
+        link_path.mkdir(parents=True, exist_ok=True)
 
 
 def _timestamp_name() -> str:

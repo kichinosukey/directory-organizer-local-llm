@@ -39,6 +39,7 @@ class DirectoryOrganizerTests(unittest.TestCase):
             self.assertTrue((run_root / "source").is_dir())
             self.assertTrue((run_root / "organized" / "documents" / "finance" / "receipts").is_dir())
             self.assertTrue((run_root / "organized" / "documents" / "finance" / "invoices").is_dir())
+            self.assertTrue((run_root / "organized" / "media" / "images").is_dir())
             self.assertIn("デモ用フォルダを作成しました。", result.stdout)
             self.assertIn(".venv/bin/python -m dirorganizer.gui.app --target-dir", result.stdout)
             self.assertIn("想定される見え方", result.stdout)
