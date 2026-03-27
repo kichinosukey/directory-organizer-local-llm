@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from dirorganizer.cli import _build_planner_manifest_section, build_client, main, parse_args, resolve_output_root
+from dirorganizer.demo_data import DEMO_ROOT_DIRNAME
 from dirorganizer.env_loader import load_dotenv
 from dirorganizer.llm_client import LocalLLMClient
 from dirorganizer.models import FileRecord
@@ -29,6 +30,49 @@ class FakeTTY(io.StringIO):
 
 
 class DirectoryOrganizerTests(unittest.TestCase):
+    def test_prepare_demo_creates_expected_structure_and_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_cli("prepare-demo", "--output-root", tmp, "--name", "sample-demo")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_root = Path(tmp) / "sample-demo"
+            self.assertTrue((run_root / "source").is_dir())
+            self.assertTrue((run_root / "organized" / "documents" / "finance" / "receipts").is_dir())
+            self.assertTrue((run_root / "organized" / "documents" / "finance" / "invoices").is_dir())
+            self.assertIn("デモ用フォルダを作成しました。", result.stdout)
+            self.assertIn(".venv/bin/python -m dirorganizer.gui.app --target-dir", result.stdout)
+            self.assertIn("想定される見え方", result.stdout)
+
+    def test_prepare_demo_rejects_existing_name_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "sample-demo"
+            existing.mkdir()
+
+            result = self.run_cli("prepare-demo", "--output-root", tmp, "--name", "sample-demo")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--overwrite", result.stderr)
+
+    def test_prepare_demo_overwrite_recreates_named_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "sample-demo"
+            stale_source = existing / "source"
+            stale_source.mkdir(parents=True)
+            (stale_source / "old.txt").write_text("old", encoding="utf-8")
+
+            result = self.run_cli("prepare-demo", "--output-root", tmp, "--name", "sample-demo", "--overwrite")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((stale_source / "old.txt").exists())
+            self.assertTrue((existing / "source" / "receipt-2026-03.pdf").exists())
+
+    def test_prepare_demo_uses_temp_root_by_default(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        exit_code = main(["prepare-demo"], stdout=stdout, stderr=stderr)
+        self.assertEqual(exit_code, 0, stderr.getvalue())
+        self.assertIn(DEMO_ROOT_DIRNAME, stdout.getvalue())
+
     def test_load_dotenv_reads_values_without_overwriting_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dotenv_path = Path(tmp) / ".env"

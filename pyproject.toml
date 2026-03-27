@@ -3,9 +3,13 @@ name = "directory-organizer-local-llm"
 version = "0.1.0"
 description = "Safe local-LLM directory organizer CLI"
 requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.8,<7",
+]
 
 [project.scripts]
 directory-organizer-local-llm = "dirorganizer.cli:main"
+directory-organizer-review-demo = "dirorganizer.gui.app:main"
 
 [tool.ruff]
 target-version = "py310"
