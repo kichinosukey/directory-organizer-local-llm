@@ -194,6 +194,8 @@ if QtCore is not None:
             self._service = service
             self._scan_thread: QtCore.QThread | None = None
             self._apply_thread: QtCore.QThread | None = None
+            self._scan_worker: ReviewWorker | None = None
+            self._apply_worker: ReviewWorker | None = None
             self._current_session: ReviewSession | None = None
             self._last_announcement = ""
             self.setWindowTitle(_copy("window_title"))
@@ -380,9 +382,11 @@ if QtCore is not None:
             thread.finished.connect(thread.deleteLater)
             if kind == "scan":
                 self._scan_thread = thread
+                self._scan_worker = worker
                 thread.finished.connect(self._clear_scan_thread)
             else:
                 self._apply_thread = thread
+                self._apply_worker = worker
                 thread.finished.connect(self._clear_apply_thread)
             thread.start()
 
@@ -460,10 +464,12 @@ if QtCore is not None:
 
         def _clear_scan_thread(self) -> None:
             self._scan_thread = None
+            self._scan_worker = None
             self._set_busy_state()
 
         def _clear_apply_thread(self) -> None:
             self._apply_thread = None
+            self._apply_worker = None
             self._set_busy_state()
 
 

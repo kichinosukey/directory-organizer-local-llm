@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     QtWidgets = None  # type: ignore[assignment]
 else:
+    from PySide6 import QtCore
+
     from dirorganizer.gui.app import ReviewQueueWindow
 
 
@@ -259,6 +262,24 @@ class ReviewQueueGuiTests(unittest.TestCase):
 
         self.assertIn("demo-source", window.subtitle_label.text())
         self.assertIn("整理レビュー", window.windowTitle())
+
+    def test_scan_downloads_runs_worker_and_updates_queue(self) -> None:
+        target_dir = Path("/tmp/demo-source")
+        service = ReviewQueueService(
+            ReviewDemoConfig(target_dir, None, None, None, None, None, None, True),
+            build_session=lambda **_: _fake_session(target_dir=target_dir),
+        )
+        window = ReviewQueueWindow(service)
+        window.show()
+        self.app.processEvents()
+
+        window.scan_downloads()
+        deadline = time.monotonic() + 2.0
+        while window._scan_thread is not None and time.monotonic() < deadline:
+            self.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
+
+        self.assertEqual(window.list_widget.count(), 2)
+        self.assertIn("経理候補", window._last_announcement)
 
 
 class _Collector:
