@@ -652,6 +652,58 @@ class DirectoryOrganizerTests(unittest.TestCase):
         self.assertTrue(any("split into 1 and 1 files" in message for message in messages))
         self.assertTrue(any("completed batch 1/1" in message and "processed 2/2 files" in message for message in messages))
 
+    def test_validate_operations_matches_nfc_and_nfd_sources(self) -> None:
+        import unicodedata
+
+        nfd_name = unicodedata.normalize("NFD", "サービス紹介.pdf")
+        nfc_name = unicodedata.normalize("NFC", "サービス紹介.pdf")
+        self.assertNotEqual(nfd_name, nfc_name)
+
+        files = [
+            FileRecord(
+                relative_path=nfd_name,
+                parent_dir=".",
+                name=nfd_name,
+                extension=".pdf",
+                size_bytes=10,
+                modified_at="2026-03-13T00:00:00+00:00",
+            ),
+        ]
+
+        class StubClient:
+            def chat_json(self, system_prompt: str, user_prompt: str) -> dict[str, object]:
+                return {
+                    "summary": "ok",
+                    "operations": [
+                        {
+                            "source": nfc_name,
+                            "destination_dir": "documents/notes",
+                            "new_name": nfc_name,
+                            "reason": "matched via NFC",
+                            "confidence": 0.9,
+                        }
+                    ],
+                }
+
+        plan = build_plan(
+            root=Path("/tmp/example"),
+            files=files,
+            existing_dirs=[],
+            rules={},
+            client=StubClient(),  # type: ignore[arg-type]
+            batch_size=20,
+            min_confidence=0.6,
+            mock=False,
+            scan_truncated=False,
+        )
+
+        self.assertEqual(len(plan.operations), 1)
+        op = plan.operations[0]
+        self.assertEqual(op.action, "move")
+        self.assertEqual(op.source, nfd_name)
+        self.assertEqual(op.destination_dir, "documents/notes")
+        self.assertNotIn("missing LLM operation", " ".join(plan.warnings))
+
     def test_plan_command_writes_progress_to_stderr_for_live_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "messy"

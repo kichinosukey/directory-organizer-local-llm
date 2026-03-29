@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -400,13 +401,18 @@ def _validate_operations(
     min_confidence: float,
 ) -> tuple[list[PlanOperation], list[str]]:
     files_by_source = {record.relative_path: record for record in files}
+    nfc_to_source = {unicodedata.normalize("NFC", k): k for k in files_by_source}
     operations_by_source: dict[str, dict[str, object]] = {}
     warnings: list[str] = []
 
     for item in raw_operations:
         source = item.get("source")
-        if isinstance(source, str) and source in files_by_source:
-            operations_by_source[source] = item
+        if isinstance(source, str):
+            matched = files_by_source.get(source) or files_by_source.get(
+                nfc_to_source.get(unicodedata.normalize("NFC", source), "")
+            )
+            if matched is not None:
+                operations_by_source[matched.relative_path] = item
 
     for source in files_by_source:
         if source not in operations_by_source:

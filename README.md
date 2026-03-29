@@ -111,11 +111,11 @@ python scripts/run_directory_organizer.py \
 
 Fast Lane は以下の既定制限で動きます。
 
-- `max-depth=1`
+- `max-depth=0`
 - `max-files=30`
 - `batch-size=15`
 - `min-confidence=0.80`
-- 対象拡張子: `.pdf` `.docx` `.txt` `.md` `.xlsx` `.csv` `.jpg` `.jpeg` `.png`
+- 対象拡張子: `.pdf` `.docx` `.txt` `.md` `.xlsx` `.csv` `.jpg` `.jpeg` `.png` `.zip` `.tar.gz` `.7z` `.dmg` `.pkg`
 - `100 MiB` 超のファイルはスキップ
 - 更新日時の新しい順で候補を絞り込み
 

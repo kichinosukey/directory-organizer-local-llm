@@ -33,6 +33,11 @@ FAST_LANE_ALLOWED_EXTENSIONS = frozenset(
         ".jpg",
         ".jpeg",
         ".png",
+        ".zip",
+        ".tar.gz",
+        ".7z",
+        ".dmg",
+        ".pkg",
     }
 )
 FAST_LANE_MAX_SIZE_BYTES = 100 * 1024 * 1024
@@ -74,12 +79,16 @@ PRESETS: dict[str, PresetConfig] = {
             ".jpeg": "media/images",
             ".png": "media/images",
             ".zip": "archives",
+            ".tar.gz": "archives",
+            ".7z": "archives",
+            ".dmg": "installers",
+            ".pkg": "installers",
         },
         allowed_extensions=FAST_LANE_ALLOWED_EXTENSIONS,
         min_confidence=0.80,
         batch_size=15,
         max_files=30,
-        max_depth=1,
+        max_depth=0,
         max_size_bytes=FAST_LANE_MAX_SIZE_BYTES,
     ),
     "finance-receipts": PresetConfig(
@@ -117,7 +126,7 @@ PRESETS: dict[str, PresetConfig] = {
         min_confidence=0.82,
         batch_size=15,
         max_files=30,
-        max_depth=1,
+        max_depth=0,
         max_size_bytes=FAST_LANE_MAX_SIZE_BYTES,
     ),
     "research-papers": PresetConfig(
@@ -154,7 +163,7 @@ PRESETS: dict[str, PresetConfig] = {
         min_confidence=0.80,
         batch_size=15,
         max_files=30,
-        max_depth=1,
+        max_depth=0,
         max_size_bytes=FAST_LANE_MAX_SIZE_BYTES,
     ),
 }
