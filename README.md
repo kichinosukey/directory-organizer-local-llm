@@ -119,34 +119,6 @@ Fast Lane は以下の既定制限で動きます。
 - `100 MiB` 超のファイルはスキップ
 - 更新日時の新しい順で候補を絞り込み
 
-### 4.5 Review Queue デモを使う
-
-まずはデモ用の煩雑フォルダを作ってから、Review Queue を開くのが最短です。
-
-```bash
-python scripts/run_directory_organizer.py prepare-demo
-```
-
-出力に、次に実行する GUI 起動コマンドが表示されます。例:
-
-```bash
-.venv/bin/python -m dirorganizer.gui.app --target-dir '/tmp/directory-organizer-demo/20260328T120000+0900/source' --mock
-```
-
-このデモでは、以下が一目で分かる状態を作ります。
-
-- 経理書類らしい候補が複数件見つかる
-- 安全に整理できる候補と、確認が必要な候補が分かれて表示される
-- 適用後に Before / After の差をフォルダ構成で確認できる
-
-ローカル LLM を使う場合は `--mock` を外してください。
-
-`~/Downloads` を直接レビューしたい場合だけ、従来どおり次のコマンドも使えます。
-
-```bash
-.venv/bin/python -m dirorganizer.gui.app --mock --target-dir ~/Downloads
-```
-
 ### 5. `responses` API や追加 payload を使う
 
 ```bash

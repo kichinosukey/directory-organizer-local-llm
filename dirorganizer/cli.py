@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from dirorganizer.demo_data import build_launch_command, prepare_demo_dataset
 from dirorganizer.env_loader import load_dotenv
 from dirorganizer.llm_client import LocalLLMClient
 from dirorganizer.models import PlanOperation, PlanResult
@@ -26,7 +25,7 @@ load_dotenv(REPO_ROOT / ".env")
 MANIFEST_VERSION = 2
 DEFAULT_BATCH_SIZE = 20
 DEFAULT_MIN_CONFIDENCE = 0.60
-LEGACY_COMMANDS = {"plan", "apply", "run", "prepare-demo"}
+LEGACY_COMMANDS = {"plan", "apply", "run"}
 BLOCKED_ISSUE_MARKERS = (
     "invalid",
     "collision",
@@ -63,8 +62,6 @@ def main(
     normalized_argv = _normalize_legacy_argv(list(sys.argv[1:] if argv is None else argv))
     args = parse_args(normalized_argv)
 
-    if args.command == "prepare-demo":
-        return _run_prepare_demo_command(args, stdout=stdout, stderr=stderr)
     if args.command == "apply":
         return _run_apply_command(args, stdout=stdout, stderr=stderr)
     if args.command == "plan":
@@ -85,15 +82,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     apply_parser = subparsers.add_parser("apply", help="Apply a saved manifest without re-planning")
     apply_parser.add_argument("--manifest", required=True, help="Path to a manifest.json file")
 
-    demo_parser = subparsers.add_parser("prepare-demo", help="Create a demo folder for the review queue")
-    demo_parser.add_argument("--output-root", default=None, help="Parent directory for the generated demo folder")
-    demo_parser.add_argument("--name", default=None, help="Optional suffix for the demo folder name")
-    demo_parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Reuse the same demo folder name if it already exists",
-    )
-
     args = parser.parse_args(argv)
     if args.command in {"plan", "run"}:
         if not (args.target_dir or "").strip():
@@ -102,35 +90,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             parser.error("--model is required unless --mock is used")
         args.extra_body = _parse_extra_body_json(args.extra_body_json, parser)
     return args
-
-
-def _run_prepare_demo_command(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> int:
-    output_root = None if args.output_root is None else resolve_configured_path(args.output_root)
-    try:
-        dataset = prepare_demo_dataset(
-            output_root=output_root,
-            name=args.name,
-            overwrite=bool(args.overwrite),
-        )
-    except FileExistsError as exc:
-        stderr.write(f"[ERROR] {exc}. `--overwrite` を付けるか、別の `--name` を指定してください。\n")
-        return 1
-    except ValueError as exc:
-        stderr.write(f"[ERROR] {exc}\n")
-        return 1
-
-    launch_command = build_launch_command(dataset.source_dir)
-    stdout.write("デモ用フォルダを作成しました。\n")
-    stdout.write(f"- 作成先: {dataset.run_root}\n")
-    stdout.write(f"- 整理前フォルダ: {dataset.source_dir}\n")
-    stdout.write(f"- 整理先フォルダ: {dataset.organized_dir}\n")
-    stdout.write("\n次にこれを実行してください。\n")
-    stdout.write(f"{launch_command}\n")
-    stdout.write("\n想定される見え方:\n")
-    stdout.write("- 経理書類らしい候補が複数件見つかります\n")
-    stdout.write("- 安全に整理できる候補と、確認が必要な候補が分かれて表示されます\n")
-    stdout.write("- 適用後に Before / After の差がフォルダ構成で確認できます\n")
-    return 0
 
 
 def _add_source_arguments(parser: argparse.ArgumentParser, *, include_yes: bool) -> None:
