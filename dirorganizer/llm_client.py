@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -17,7 +18,7 @@ class LocalLLMClient:
     extra_body: dict[str, object] = field(default_factory=dict)
     timeout: int = 120
     temperature: float = 0.0
-    max_output_tokens: int = 1200
+    max_output_tokens: int = 4096
     request_count: int = 0
     request_seconds: float = 0.0
 
@@ -132,12 +133,19 @@ class LocalLLMClient:
         return content
 
 
+def _strip_thinking_tags(text: str) -> str:
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned)
+    return cleaned.strip()
+
+
 def _extract_json_object(text: str) -> dict[str, object]:
-    start = text.find("{")
-    end = text.rfind("}")
+    cleaned = _strip_thinking_tags(text)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise RuntimeError(f"LLM response did not contain JSON: {text[:200]}")
-    snippet = text[start : end + 1]
+    snippet = cleaned[start : end + 1]
     return json.loads(snippet)
 
 

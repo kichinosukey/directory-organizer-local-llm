@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import time
@@ -163,8 +164,11 @@ def apply_plan(root: Path, plan: PlanResult) -> ApplyResult:
                 }
             )
             continue
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(source_path), str(target_path))
+        if operation.action == "dedup":
+            source_path.unlink()
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source_path), str(target_path))
         applied_moves += 1
         applied_operations.append(operation)
 
@@ -450,9 +454,14 @@ def _validate_operations(
 
         absolute_target = root / operation.target_path
         absolute_source = root / operation.source
-        if absolute_target.exists() and absolute_target != absolute_source:
-            operation.can_apply = False
-            operation.issues.append("target already exists on disk")
+        if absolute_target.exists() and absolute_target != absolute_source and operation.action == "move":
+            if _files_are_identical(absolute_source, absolute_target):
+                operation.action = "dedup"
+                operation.reason = f"identical to existing {operation.target_path}; remove source"
+            else:
+                unique = _find_unique_target(root, operation.target_path)
+                operation.target_path = unique
+                operation.new_name = PurePosixPath(unique).name
 
         operations.append(operation)
 
@@ -516,6 +525,17 @@ def _validate_apply_operation(
     source_path: Path,
     target_path: Path,
 ) -> str | None:
+    if operation.action == "dedup":
+        if not operation.can_apply:
+            return "operation is marked as not applicable"
+        if not source_path.exists():
+            return "source file no longer exists"
+        if not target_path.exists():
+            return "dedup target no longer exists"
+        if not _files_are_identical(source_path, target_path):
+            return "files are no longer identical; skipping dedup"
+        return None
+
     if operation.action != "move":
         return "operation is not a move"
     if not operation.can_apply:
@@ -573,3 +593,33 @@ def _coerce_confidence(value: object) -> float:
     if isinstance(value, (float, int)):
         return max(0.0, min(1.0, float(value)))
     return 0.0
+
+
+def _file_hash(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _files_are_identical(a: Path, b: Path) -> bool:
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        return _file_hash(a) == _file_hash(b)
+    except OSError:
+        return False
+
+
+def _find_unique_target(root: Path, target_path: str) -> str:
+    p = PurePosixPath(target_path)
+    stem = p.stem
+    suffix = p.suffix
+    parent = p.parent.as_posix()
+    for i in range(1, 100):
+        candidate_name = f"{stem}_{i}{suffix}"
+        candidate = str(PurePosixPath(parent) / candidate_name) if parent != "." else candidate_name
+        if not (root / candidate).exists():
+            return candidate
+    return target_path
